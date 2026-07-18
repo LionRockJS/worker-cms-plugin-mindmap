@@ -253,17 +253,24 @@
   canvas.setAttribute('tabindex', '0');
   canvas.style.outline = 'none';
 
-  var COLORS = {
-    edge: 'var(--color-gray-300, #d1d5db)',
-    rootFill: 'var(--color-indigo-600, #4f46e5)',
-    rootText: '#ffffff',
-    nodeFill: 'var(--color-white, #ffffff)',
-    nodeStroke: 'var(--color-gray-300, #d1d5db)',
-    nodeText: 'var(--color-gray-900, #111827)',
-    selectedStroke: 'var(--color-indigo-600, #4f46e5)',
-    selectedFill: 'var(--color-indigo-50, #eef2ff)',
-    dropStroke: 'var(--color-indigo-600, #4f46e5)',
-  };
+  function colorsForTheme() {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    return {
+      edge: 'var(--color-gray-300, ' + (light ? '#d1d5db' : '#323d4e') + ')',
+      rootFill: 'var(--color-indigo-600, ' + (light ? '#4f46e5' : '#cbef34') + ')',
+      // The dark CMS theme maps indigo to bright lime, which needs dark ink.
+      rootText: light ? '#ffffff' : '#0a0e17',
+      // Pair the theme's inverted gray text token with its actual card surface.
+      nodeFill: light ? '#ffffff' : '#141a26',
+      nodeStroke: 'var(--color-gray-300, ' + (light ? '#d1d5db' : '#323d4e') + ')',
+      nodeText: 'var(--color-gray-900, ' + (light ? '#111827' : '#eef2f9') + ')',
+      selectedStroke: 'var(--color-indigo-600, ' + (light ? '#4f46e5' : '#cbef34') + ')',
+      selectedFill: 'var(--color-indigo-50, ' + (light ? '#eef2ff' : '#1b240c') + ')',
+      dropStroke: 'var(--color-indigo-600, ' + (light ? '#4f46e5' : '#cbef34') + ')',
+    };
+  }
+
+  var COLORS = colorsForTheme();
 
   var boxes = {};
 
@@ -708,6 +715,14 @@
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────
+  // The shell switches themes without reloading, so repaint SVG attributes
+  // when its data-theme value changes.
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(function () {
+      COLORS = colorsForTheme();
+      render();
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }
   fallback.hidden = true;
   canvas.hidden = false;
   toolbar.hidden = false;

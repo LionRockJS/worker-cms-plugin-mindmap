@@ -117,7 +117,11 @@ describe('view + asset serving', () => {
     const response = await plugin.fetch(new Request('https://plugin.example.com/assets/mindmap-editor.js'), env());
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/javascript');
-    expect(await response.text()).toContain('data-mindmap');
+    const script = await response.text();
+    expect(script).toContain('data-mindmap');
+    expect(script).toContain("rootText: light ? '#ffffff' : '#0a0e17'");
+    expect(script).toContain("nodeFill: light ? '#ffffff' : '#141a26'");
+    expect(script).toContain("attributeFilter: ['data-theme']");
   });
 
   it('serves the editor asset through the admin proxy path', async () => {
