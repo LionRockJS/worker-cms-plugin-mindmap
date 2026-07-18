@@ -1,0 +1,9 @@
+{
+  "plugins": {
+    "mindmap": {
+      "nav": {
+        "maps": "Mind Maps"
+      }
+    }
+  }
+}

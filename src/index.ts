@@ -21,7 +21,7 @@ import {
   serveViewAsset,
   tenantClientEnv,
 } from '@lionrockjs/worker-cms-plugin';
-import { handleMapsAdmin } from './maps';
+import { handleMapsAdmin, handleMindmapEditView } from './maps';
 import { forbidden, mindmapAccessForRequest } from './permissions';
 // The plugin manifest (content type, nav, permissions, assets, editViews) is
 // plain data, served verbatim at /__plugin/manifest.
@@ -49,7 +49,7 @@ export default {
     // x-plugin-secret verified against the SAME registry row), then all
     // downstream code runs against a tenant-scoped env.
     let env = baseEnv;
-    const secretRequired = path.startsWith('/__plugin/admin');
+    const secretRequired = path.startsWith('/__plugin/admin') || path === '/__plugin/edit';
     if (secretRequired) {
       const tenant = await requireTenant(request, baseEnv);
       if (tenant instanceof Response) return tenant;
@@ -74,6 +74,12 @@ export default {
     // must answer here even though run_worker_first routes it to the Worker.
     if (path.startsWith('/assets/')) {
       return serveViewAsset(env.VIEWS, path);
+    }
+
+    if (path === '/__plugin/edit' && request.method === 'POST') {
+      const access = mindmapAccessForRequest(request);
+      if (!access.canEdit) return forbidden();
+      return handleMindmapEditView(request, env.VIEWS);
     }
 
     if (path.startsWith('/__plugin/admin')) {

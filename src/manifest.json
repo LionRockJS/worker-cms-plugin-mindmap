@@ -12,6 +12,7 @@
   "assets": [
     { "path": "/assets/mindmap-editor.js", "label": "Interactive mind map editor" }
   ],
+  "editViews": ["mindmap"],
   "contentTypes": {
     "blueprint": {
       "mindmap": [

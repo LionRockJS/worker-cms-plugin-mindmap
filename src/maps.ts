@@ -7,13 +7,13 @@
 //   lect.node = [ { id: "root", parent: "", text: "Central topic",
 //                   display_text: { en: "…", "zh-hant": "…" }, _weight: 10 }, … ]
 // The root's parent is "". `text` is the canonical label this plugin's editor
-// works on; `display_text` is the localized value translators fill in through
-// the native editor (renderers show display_text for the viewer's language and
-// fall back to text). Because nodes are blueprint items, the NATIVE page
+// works on; `display_text` is the localized value editors can update in the
+// map or native editor (renderers show display_text for the viewer's language
+// and fall back to text). Because nodes are blueprint items, the NATIVE page
 // editor edits them with its stock item UI, while this plugin renders the same
 // items as an interactive SVG mind map (views/assets/mindmap-editor.js) with a
-// raw-JSON textarea fallback ({ nodes: [{ id, text, parent }] }, root parent
-// null), so the map stays editable before the JS asset is approved.
+// raw-JSON textarea fallback ({ nodes: [{ id, text, parent, displayText? }] },
+// root parent null), so the map stays editable before the JS asset is approved.
 //
 // Two merge-semantics constraints shape this file (host utils/lect.ts
 // deepMergeLect merges arrays BY INDEX, incoming length wins):
@@ -52,6 +52,8 @@ export interface MindmapNode {
   id: string;
   text: string;
   parent: string | null;
+  /** Locale code → translated display label. Omitted when no locale is set. */
+  displayText?: Record<string, string>;
 }
 
 type ParsedMapData =
@@ -71,7 +73,7 @@ export function defaultNodes(rootText: string): MindmapNode[] {
  */
 export function nodesFromLect(lect: Record<string, unknown>): MindmapNode[] {
   const seen = new Set<string>();
-  const rows: Array<{ id: string; parent: string; text: string; weight: number }> = [];
+  const rows: Array<{ id: string; parent: string; text: string; displayText: Record<string, string>; weight: number }> = [];
   for (const item of items(lect, 'node')) {
     const id = str(item.id).trim();
     if (!id || seen.has(id)) continue;
@@ -80,6 +82,7 @@ export function nodesFromLect(lect: Record<string, unknown>): MindmapNode[] {
       id,
       parent: str(item.parent).trim(),
       text: scalarText(item.text),
+      displayText: displayTextMap(item.display_text),
       weight: Number(item._weight),
     });
   }
@@ -90,13 +93,17 @@ export function nodesFromLect(lect: Record<string, unknown>): MindmapNode[] {
     - (Number.isFinite(b.weight) ? b.weight : Number.MAX_SAFE_INTEGER));
 
   const root = rows.find((row) => !row.parent) ?? rows[0];
-  const nodes: MindmapNode[] = rows.map((row) => ({
-    id: row.id,
-    text: row.text,
-    parent: row === root
-      ? null
-      : row.parent && row.parent !== row.id && seen.has(row.parent) ? row.parent : root.id,
-  }));
+  const nodes: MindmapNode[] = rows.map((row) => {
+    const node: MindmapNode = {
+      id: row.id,
+      text: row.text,
+      parent: row === root
+        ? null
+        : row.parent && row.parent !== row.id && seen.has(row.parent) ? row.parent : root.id,
+    };
+    if (Object.keys(row.displayText).length) node.displayText = row.displayText;
+    return node;
+  });
 
   // Break cycles: anything not reachable from the root becomes a root child.
   const childrenOf = new Map<string, MindmapNode[]>();
@@ -126,10 +133,10 @@ export function nodesFromLect(lect: Record<string, unknown>): MindmapNode[] {
  * (see the merge-semantics note in the header) and weights are re-issued in
  * editor order so the native editor lists nodes the way the map shows them.
  *
- * `display_text` translations are not part of the editor's JSON document;
- * they are carried over from the stored items BY NODE ID, padded to the union
- * of languages in use so the host's key-wise map merge cannot leak another
- * node's translation into this index.
+ * Translations from the editor document override stored values BY NODE ID;
+ * old documents without `displayText` preserve their stored translations.
+ * Every item is padded to the union of languages in use so the host's key-wise
+ * map merge cannot leak another node's translation into this index.
  */
 export function nodeItemsFromNodes(
   nodes: MindmapNode[],
@@ -143,12 +150,19 @@ export function nodeItemsFromNodes(
     if (id && !storedDisplay.has(id)) storedDisplay.set(id, display);
     for (const language of Object.keys(display)) languages.add(language);
   }
+  for (const node of nodes) {
+    for (const language of Object.keys(node.displayText ?? {})) languages.add(language);
+  }
 
   return nodes.map((node, index) => {
-    const display = storedDisplay.get(node.id) ?? {};
+    const stored = storedDisplay.get(node.id) ?? {};
+    const submitted = node.displayText;
     const displayText: Record<string, string> = {};
-    for (const language of languages) displayText[language] = '';
-    for (const [language, value] of Object.entries(display)) displayText[language] = value;
+    for (const language of languages) {
+      displayText[language] = submitted && Object.hasOwn(submitted, language)
+        ? submitted[language]
+        : stored[language] ?? '';
+    }
     return {
       id: node.id,
       parent: node.parent ?? '',
@@ -186,7 +200,7 @@ function scalarText(value: unknown): string {
 
 /**
  * Validates and normalizes a submitted mind map JSON document. Output nodes
- * carry only {id, text, parent} so client-invented keys never reach the lect.
+ * carry only validated node data so client-invented keys never reach the lect.
  */
 export function parseMapData(raw: string): ParsedMapData {
   if (raw.length > MAX_RAW_BYTES) return { ok: false, error: 'Mind map data is too large (256 KB max).' };
@@ -216,7 +230,13 @@ export function parseMapData(raw: string): ParsedMapData {
     const text = typeof record.text === 'string' ? record.text.slice(0, MAX_TEXT_LENGTH) : '';
     const parent = record.parent == null ? null : typeof record.parent === 'string' ? record.parent : '';
     if (parent === '') return { ok: false, error: `Node "${id}" has an invalid parent reference.` };
-    nodes.push({ id, text, parent });
+    const displayText = parseDisplayText(record.displayText);
+    if (displayText === null) {
+      return { ok: false, error: `Node "${id}" has invalid display text translations.` };
+    }
+    const node: MindmapNode = { id, text, parent };
+    if (Object.keys(displayText).length) node.displayText = displayText;
+    nodes.push(node);
   }
 
   const roots = nodes.filter((node) => node.parent === null);
@@ -250,6 +270,17 @@ export function parseMapData(raw: string): ParsedMapData {
   }
 
   return { ok: true, nodes, nodeCount: nodes.length };
+}
+
+function parseDisplayText(value: unknown): Record<string, string> | null {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const displayText: Record<string, string> = {};
+  for (const [language, translation] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[a-z][a-z0-9-]{0,31}$/i.test(language) || typeof translation !== 'string') return null;
+    displayText[language] = translation.slice(0, MAX_TEXT_LENGTH);
+  }
+  return displayText;
 }
 
 function pageNodes(page: CmsPage): MindmapNode[] {
@@ -286,7 +317,7 @@ async function listView(
     newAction: `${ADMIN_BASE}/maps/new`,
     maps: pages.map((page) => ({
       name: page.name,
-      editHref: `${ADMIN_BASE}/maps/${page.id}`,
+      editHref: `/admin/pages/${page.id}/edit?return_to=${encodeURIComponent(`${ADMIN_BASE}/maps`)}`,
       deleteAction: access.canEdit ? `${ADMIN_BASE}/maps/${page.id}/delete` : '',
       nodeCount: nodesFromLect(page.lect ?? {}).length,
       updated: formatDate(page.updated_at),
@@ -299,6 +330,19 @@ interface EditorViewOptions {
   errors?: string[];
   /** Preserve the user's submitted (invalid) JSON instead of the stored one. */
   rawData?: string;
+  /** CMS edit-view context. Omitted for the legacy plugin-admin form. */
+  cmsPage?: {
+    action: string;
+    backHref: string;
+    slug: string;
+    weight: number;
+    start: string | null;
+    end: string | null;
+    timezone: string | null;
+    editors: string | null;
+    language: string;
+    fields: Array<{ name: string; value: string }>;
+  };
 }
 
 function editorView(
@@ -309,21 +353,125 @@ function editorView(
   jsonOnly: boolean,
   options: EditorViewOptions = {},
 ): Promise<Response> {
+  const cmsPage = options.cmsPage;
   return adminView(views, page.name || 'Mind map', 'map-edit', {
     title: page.name || 'Mind map',
     name: page.name,
     data: options.rawData ?? docJson(nodes),
-    action: `${ADMIN_BASE}/maps/${page.id}`,
-    backHref: `${ADMIN_BASE}/maps`,
-    deleteAction: access.canEdit ? `${ADMIN_BASE}/maps/${page.id}/delete` : '',
-    // The same nodes are plain lect items, so the native page editor works on
-    // them too; the back arrow there returns to this mind map view.
-    pageEditHref: `/admin/pages/${page.id}/edit?return_to=${encodeURIComponent(`${ADMIN_BASE}/maps/${page.id}`)}`,
+    action: cmsPage?.action ?? `${ADMIN_BASE}/maps/${page.id}`,
+    backHref: cmsPage?.backHref ?? `${ADMIN_BASE}/maps`,
+    deleteAction: access.canEdit
+      ? cmsPage ? `/admin/pages/${page.id}/delete` : `${ADMIN_BASE}/maps/${page.id}/delete`
+      : '',
+    saveLabel: cmsPage ? 'Save changes' : 'Save',
+    deleteLabel: cmsPage ? 'Delete' : 'Delete mind map',
+    deleteConfirm: cmsPage
+      ? 'Delete this mind map? It will be moved to trash and can be restored later.'
+      : 'Delete this mind map? This cannot be undone.',
+    cmsEditor: !!cmsPage,
+    pageType: PAGE_TYPE,
+    slug: cmsPage?.slug ?? '',
+    weight: cmsPage?.weight ?? 0,
+    start: cmsPage?.start ?? '',
+    end: cmsPage?.end ?? '',
+    timezone: cmsPage?.timezone ?? '',
+    editors: cmsPage?.editors ?? '',
+    language: cmsPage?.language ?? 'mis',
+    cmsFields: cmsPage?.fields ?? [],
+    fallbackAction: cmsPage ? `${ADMIN_BASE}/maps/${page.id}` : '',
     readOnly: !access.canEdit,
     flash: options.flash ?? '',
     errors: options.errors ?? [],
     assetHref: EDITOR_ASSET_HREF,
   }, jsonOnly);
+}
+
+interface EditViewContext {
+  mode: 'new' | 'edit';
+  action: string;
+  backHref: string;
+  language: string;
+  pageType: string;
+  page: {
+    id: number | string;
+    name: string;
+    slug: string;
+    weight: number;
+    start: string | null;
+    end: string | null;
+    timezone: string | null;
+    editors: string | null;
+    lect: string;
+  };
+  flash?: string;
+  errors?: string[];
+}
+
+/** Renders the visual editor at the CMS's standard /admin/pages/:id/edit URL. */
+export async function handleMindmapEditView(request: Request, views: Fetcher): Promise<Response> {
+  const context = await request.json().catch(() => null) as EditViewContext | null;
+  if (!context || context.mode !== 'edit' || context.pageType !== PAGE_TYPE) {
+    return new Response('not found', { status: 404 });
+  }
+
+  const lect = parseLect(context.page.lect);
+  const storedNodes = nodesFromLect(lect);
+  const nodes = storedNodes.length ? storedNodes : defaultNodes(context.page.name);
+  const fields = cmsNodeFields(nodes, lect);
+
+  return editorView(
+    views,
+    context.page,
+    nodes,
+    { canView: true, canEdit: true },
+    false,
+    {
+      flash: context.flash,
+      errors: context.errors,
+      cmsPage: {
+        action: context.action,
+        backHref: context.backHref || `${ADMIN_BASE}/maps`,
+        slug: context.page.slug,
+        weight: context.page.weight,
+        start: context.page.start,
+        end: context.page.end,
+        timezone: context.page.timezone,
+        editors: context.page.editors,
+        language: context.language || 'mis',
+        fields,
+      },
+    },
+  );
+}
+
+/** Flattens node items into the field names parsed by Worker CMS postToLect. */
+export function cmsNodeFields(
+  nodes: MindmapNode[],
+  storedLect: Record<string, unknown> = {},
+): Array<{ name: string; value: string }> {
+  const fields: Array<{ name: string; value: string }> = [];
+  for (const [index, item] of nodeItemsFromNodes(nodes, storedLect).entries()) {
+    const prefix = `.node[${index}]`;
+    for (const attribute of ['id', 'parent', 'text', '_weight'] as const) {
+      fields.push({ name: `${prefix}@${attribute}`, value: String(item[attribute] ?? '') });
+    }
+    const displayText = displayTextMap(item.display_text);
+    for (const [language, value] of Object.entries(displayText)) {
+      fields.push({ name: `${prefix}.display_text|${language}`, value });
+    }
+  }
+  return fields;
+}
+
+function parseLect(raw: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 // ── Admin routing: /admin/plugins/mindmap/maps/… ───────────────────────────
@@ -353,7 +501,7 @@ export async function handleMapsAdmin(
       name,
       lect: { _type: PAGE_TYPE, node: nodeItemsFromNodes(defaultNodes(name)) },
     });
-    return redirect(`${ADMIN_BASE}/maps/${page.id}`);
+    return redirect(`/admin/pages/${page.id}/edit?return_to=${encodeURIComponent(`${ADMIN_BASE}/maps`)}`);
   }
 
   const id = Number.parseInt(idSegment, 10);
@@ -374,6 +522,7 @@ export async function handleMapsAdmin(
     if (!access.canEdit) return forbidden();
     const form = await request.formData();
     const name = str(form.get('name')).trim().slice(0, 200) || page.name;
+    const slug = str(form.get('slug')).trim().slice(0, 200);
     const raw = str(form.get('data'));
     const parsed = parseMapData(raw);
     if (!parsed.ok) {
@@ -382,11 +531,13 @@ export async function handleMapsAdmin(
         rawData: raw,
       });
     }
-    await cms.update(id, { name, lect: { node: nodeItemsFromNodes(parsed.nodes, page.lect ?? {}) } });
-    return redirect(`${ADMIN_BASE}/maps/${id}?flash=${encodeURIComponent('Mind map saved')}`);
+    await cms.update(id, {
+      name,
+      ...(slug ? { slug } : {}),
+      lect: { node: nodeItemsFromNodes(parsed.nodes, page.lect ?? {}) },
+    });
+    return redirect(`/admin/pages/${id}/edit?return_to=${encodeURIComponent(`${ADMIN_BASE}/maps`)}&flash=${encodeURIComponent('Mind map saved')}`);
   }
 
-  return editorView(views, page, pageNodes(page), access, jsonOnly, {
-    flash: url.searchParams.get('flash') ?? '',
-  });
+  return redirect(`/admin/pages/${id}/edit?return_to=${encodeURIComponent(`${ADMIN_BASE}/maps`)}`);
 }

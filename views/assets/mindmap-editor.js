@@ -10,6 +10,13 @@
 (function () {
   'use strict';
 
+  var flash = document.querySelector('[data-mm-flash]');
+  if (flash) {
+    window.setTimeout(function () {
+      flash.remove();
+    }, 4000);
+  }
+
   var host = document.querySelector('[data-mindmap]');
   if (!host) return;
   var source = host.querySelector('[data-mm-source]');
@@ -19,8 +26,26 @@
   if (!source || !canvas || !toolbar || !fallback) return;
 
   var readOnly = host.getAttribute('data-readonly') === '1';
+  var activeLanguage = host.getAttribute('data-mm-language') || 'mis';
   var form = source.form || host.closest('form');
+  var cmsFields = form && form.querySelector('[data-mm-cms-fields]');
   var dirtyBadge = document.querySelector('[data-mm-dirty]');
+  var nameInput = document.getElementById('mindmap-name');
+  var slugInput = document.getElementById('mindmap-slug');
+
+  // Inline Page Identity Header: mirror the Event create view. The slug tracks
+  // the title until the editor explicitly changes the slug in this session.
+  if (nameInput && slugInput) {
+    var slugEdited = false;
+    slugInput.addEventListener('input', function () { slugEdited = true; });
+    nameInput.addEventListener('input', function () {
+      if (slugEdited) return;
+      slugInput.value = nameInput.value.toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    });
+  }
 
   // ── Document state ───────────────────────────────────────────────────────
   var nodes = parseDocument(source.value);
@@ -28,6 +53,12 @@
 
   var selectedId = rootNode().id;
   var dirty = false;
+
+  // When this approved asset is unavailable, the Save button posts the raw
+  // document to the legacy plugin handler. Once enhancement succeeds, submit
+  // through the CMS action so normal versions/hooks are preserved.
+  var saveButton = form && form.querySelector('[data-mm-save]');
+  if (saveButton) saveButton.removeAttribute('formaction');
 
   function parseDocument(raw) {
     var parsed;
@@ -46,7 +77,17 @@
       seen[entry.id] = true;
       var parent = entry.parent == null ? null : String(entry.parent);
       if (parent === null) rootCount++;
-      list.push({ id: entry.id, text: typeof entry.text === 'string' ? entry.text : '', parent: parent });
+      var displayText = {};
+      if (entry.displayText !== undefined) {
+        if (!entry.displayText || typeof entry.displayText !== 'object' || Array.isArray(entry.displayText)) return null;
+        for (var language in entry.displayText) {
+          if (!/^[a-z][a-z0-9-]{0,31}$/i.test(language) || typeof entry.displayText[language] !== 'string') return null;
+          displayText[language] = entry.displayText[language].slice(0, 500);
+        }
+      }
+      var node = { id: entry.id, text: typeof entry.text === 'string' ? entry.text : '', parent: parent };
+      if (Object.keys(displayText).length) node.displayText = displayText;
+      list.push(node);
     }
     if (rootCount !== 1) return null;
     for (var j = 0; j < list.length; j++) {
@@ -96,12 +137,49 @@
 
   function syncSource() {
     source.value = JSON.stringify({ nodes: nodes }, null, 2);
+    syncCmsFields();
+  }
+
+  function syncCmsFields() {
+    if (!cmsFields) return;
+    while (cmsFields.firstChild) cmsFields.removeChild(cmsFields.firstChild);
+    var languages = {};
+    for (var i = 0; i < nodes.length; i++) {
+      var translations = nodes[i].displayText || {};
+      for (var language in translations) languages[language] = true;
+    }
+    var languageList = Object.keys(languages);
+    for (var nodeIndex = 0; nodeIndex < nodes.length; nodeIndex++) {
+      var node = nodes[nodeIndex];
+      var prefix = '.node[' + nodeIndex + ']';
+      appendCmsField(prefix + '@id', node.id);
+      appendCmsField(prefix + '@parent', node.parent === null ? '' : node.parent);
+      appendCmsField(prefix + '@text', node.text);
+      appendCmsField(prefix + '@_weight', String((nodeIndex + 1) * 10));
+      for (var languageIndex = 0; languageIndex < languageList.length; languageIndex++) {
+        var languageCode = languageList[languageIndex];
+        var displayText = node.displayText && Object.prototype.hasOwnProperty.call(node.displayText, languageCode)
+          ? node.displayText[languageCode]
+          : '';
+        appendCmsField(prefix + '.display_text|' + languageCode, displayText);
+      }
+    }
+  }
+
+  function appendCmsField(name, value) {
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    cmsFields.appendChild(input);
   }
 
   function markDirty() {
     dirty = true;
     if (dirtyBadge) dirtyBadge.hidden = false;
   }
+
+  if (form) form.addEventListener('submit', syncSource);
 
   // ── Text measurement ─────────────────────────────────────────────────────
   var FONT = '13px ui-sans-serif, system-ui, -apple-system, sans-serif';
@@ -267,6 +345,8 @@
       selectedStroke: 'var(--color-indigo-600, ' + (light ? '#4f46e5' : '#cbef34') + ')',
       selectedFill: 'var(--color-indigo-50, ' + (light ? '#eef2ff' : '#1b240c') + ')',
       dropStroke: 'var(--color-indigo-600, ' + (light ? '#4f46e5' : '#cbef34') + ')',
+      dangerFill: 'var(--color-red-600, ' + (light ? '#dc2626' : '#f1566f') + ')',
+      dangerText: light ? '#ffffff' : '#0a0e17',
     };
   }
 
@@ -278,6 +358,81 @@
     var node = document.createElementNS(SVG_NS, name);
     for (var key in attrs) node.setAttribute(key, attrs[key]);
     return node;
+  }
+
+  function nodeActionButton(kind, nodeId, x, label, fill, ink) {
+    var button = el('g', {
+      transform: 'translate(' + x + ' 0)',
+      role: 'button',
+      tabindex: '0',
+      'aria-label': label,
+      'data-mm-node-action': kind,
+    });
+    button.style.cursor = 'pointer';
+
+    var title = el('title', {});
+    title.textContent = label;
+    button.appendChild(title);
+    button.appendChild(el('rect', {
+      width: 22,
+      height: 22,
+      rx: 6,
+      fill: fill,
+      stroke: COLORS.nodeFill,
+      'stroke-width': '1.5',
+    }));
+
+    if (kind === 'add-child') {
+      button.appendChild(el('path', {
+        d: 'M 7 11 H 15 M 11 7 V 15',
+        fill: 'none',
+        stroke: ink,
+        'stroke-width': '1.8',
+        'stroke-linecap': 'round',
+      }));
+    } else {
+      button.appendChild(el('path', {
+        d: 'M 6.5 7.5 H 15.5 M 9 7.5 V 6 H 13 V 7.5 M 8 9.5 L 8.7 16 H 13.3 L 14 9.5',
+        fill: 'none',
+        stroke: ink,
+        'stroke-width': '1.5',
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+      }));
+    }
+
+    function activate(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (kind === 'add-child') addChild(nodeId);
+      else deleteNode(nodeId);
+    }
+
+    button.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
+    button.addEventListener('click', activate);
+    button.addEventListener('dblclick', function (event) { event.stopPropagation(); });
+    button.addEventListener('keydown', function (event) {
+      var key = keyName(event);
+      if (key === 'Enter' || key === ' ' || key === 'Spacebar') activate(event);
+    });
+    return button;
+  }
+
+  function appendNodeActions(group, node, box) {
+    var canDelete = node.parent !== null;
+    var count = canDelete ? 2 : 1;
+    var size = 22;
+    var gap = 4;
+    var width = count * size + (count - 1) * gap;
+    var actions = el('g', {
+      transform: 'translate(' + (box.w / 2 - width) + ' ' + (-box.h / 2 - 28) + ')',
+      'data-mm-node-actions': node.id,
+    });
+    actions.appendChild(nodeActionButton('add-child', node.id, 0, 'Add child', COLORS.selectedStroke, COLORS.rootText));
+    if (canDelete) {
+      actions.appendChild(nodeActionButton('delete', node.id, size + gap, 'Delete node', COLORS.dangerFill, COLORS.dangerText));
+    }
+    group.appendChild(actions);
   }
 
   function applyView() {
@@ -345,6 +500,7 @@
         text.appendChild(span);
       }
       group.appendChild(text);
+      if (selected && !readOnly) appendNodeActions(group, node, box);
       items.appendChild(group);
     }
     applyView();
@@ -403,62 +559,232 @@
     commit();
   }
 
-  // ── Inline rename ────────────────────────────────────────────────────────
+  // ── Node editor ──────────────────────────────────────────────────────────
   var editor = null;
+
+  function applyEditorColors(element) {
+    element.style.background = COLORS.nodeFill;
+    element.style.color = COLORS.nodeText;
+    element.style.borderColor = COLORS.selectedStroke;
+    var inputs = element.querySelectorAll('[data-mm-editor-input]');
+    for (var i = 0; i < inputs.length; i++) {
+      inputs[i].style.background = COLORS.selectedFill;
+      inputs[i].style.color = COLORS.nodeText;
+      inputs[i].style.borderColor = COLORS.nodeStroke;
+      inputs[i].style.caretColor = COLORS.selectedStroke;
+    }
+    var save = element.querySelector('[data-mm-editor-save]');
+    if (save) {
+      save.style.background = COLORS.selectedStroke;
+      save.style.color = COLORS.rootText;
+    }
+  }
+
+  function editorInput(value, label, placeholder) {
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = value;
+    input.maxLength = 500;
+    input.placeholder = placeholder || '';
+    input.setAttribute('aria-label', label);
+    input.setAttribute('data-mm-editor-input', '1');
+    input.style.cssText = 'display:block;box-sizing:border-box;width:100%;padding:7px 9px;border:1px solid;'
+      + 'border-radius:6px;font:13px ui-sans-serif,system-ui,sans-serif;';
+    return input;
+  }
+
+  function knownDisplayLanguages() {
+    var languages = {};
+    languages[activeLanguage] = true;
+    for (var i = 0; i < nodes.length; i++) {
+      var displayText = nodes[i].displayText || {};
+      for (var language in displayText) languages[language] = true;
+    }
+    return Object.keys(languages).sort();
+  }
+
+  function selectOption(select, language) {
+    var option = document.createElement('option');
+    option.value = language;
+    option.textContent = language;
+    select.appendChild(option);
+  }
 
   function startEditing(id, selectAll) {
     if (readOnly) return;
-    var box = boxes[id];
     var node = nodeById(id);
-    if (!box || !node) return;
+    if (!node) return;
     stopEditing(false);
 
-    var input = document.createElement('input');
-    input.type = 'text';
-    input.value = node.text;
-    input.maxLength = 500;
-    input.setAttribute('data-mm-editing', id);
-    var width = Math.max(box.w * view.scale, 140);
-    input.style.cssText = 'position:absolute;z-index:10;transform:translate(-50%,-50%);text-align:center;'
-      + 'font:13px ui-sans-serif,system-ui,sans-serif;padding:4px 8px;border:1px solid #4f46e5;'
-      + 'border-radius:8px;background:#fff;color:#111827;width:' + Math.ceil(width) + 'px';
-    input.style.left = (view.tx + box.x * view.scale) + 'px';
-    input.style.top = (view.ty + box.y * view.scale) + 'px';
+    var dialog = document.createElement('div');
+    dialog.setAttribute('data-mm-editing', id);
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', 'Edit node text');
+    dialog.style.cssText = 'position:absolute;z-index:20;left:50%;top:50%;transform:translate(-50%,-50%);'
+      + 'box-sizing:border-box;width:min(32rem,calc(100% - 2rem));max-height:calc(100% - 2rem);overflow:auto;'
+      + 'padding:16px;border:1px solid;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.32)';
 
-    input.addEventListener('keydown', function (event) {
+    var heading = document.createElement('h2');
+    heading.textContent = 'Edit node';
+    heading.style.cssText = 'margin:0 0 12px;font:600 15px ui-sans-serif,system-ui,sans-serif';
+    dialog.appendChild(heading);
+    var primaryLabel = document.createElement('label');
+    primaryLabel.textContent = 'Text';
+    primaryLabel.style.cssText = 'display:block;font:600 12px ui-sans-serif,system-ui,sans-serif;margin-bottom:5px';
+    dialog.appendChild(primaryLabel);
+    var textInput = editorInput(node.text, 'Text');
+    dialog.appendChild(textInput);
+
+    var translationHeader = document.createElement('div');
+    translationHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px';
+    var translationHeading = document.createElement('span');
+    translationHeading.textContent = 'Display text';
+    translationHeading.style.cssText = 'font:600 12px ui-sans-serif,system-ui,sans-serif';
+    translationHeader.appendChild(translationHeading);
+
+    var languageLabel = document.createElement('label');
+    languageLabel.textContent = 'Language';
+    languageLabel.style.cssText = 'display:flex;min-width:0;align-items:center;gap:8px;font:12px ui-sans-serif,system-ui,sans-serif;opacity:.78';
+    var languageSelect = document.createElement('select');
+    languageSelect.setAttribute('aria-label', 'Display text language');
+    languageSelect.setAttribute('data-mm-editor-input', '1');
+    languageSelect.style.cssText = 'min-width:5.25rem;padding:4px 8px;border:1px solid;border-radius:8px;font:12px ui-sans-serif,system-ui,sans-serif';
+    var languages = knownDisplayLanguages();
+    for (var i = 0; i < languages.length; i++) {
+      selectOption(languageSelect, languages[i]);
+    }
+    languageSelect.value = languages.indexOf(activeLanguage) >= 0 ? activeLanguage : languages[0];
+    languageLabel.appendChild(languageSelect);
+    translationHeader.appendChild(languageLabel);
+    dialog.appendChild(translationHeader);
+
+    var translationValues = {};
+    var storedDisplayText = node.displayText || {};
+    for (var storedLanguage in storedDisplayText) translationValues[storedLanguage] = storedDisplayText[storedLanguage];
+    var translationInput = editorInput(translationValues[languageSelect.value] || '', 'Display text', 'Uses Text when blank');
+    translationInput.style.marginTop = '8px';
+    dialog.appendChild(translationInput);
+    var translationHint = document.createElement('p');
+    translationHint.textContent = 'Leave blank to use the main text for this language.';
+    translationHint.style.cssText = 'margin:4px 0 0;font:12px ui-sans-serif,system-ui,sans-serif;opacity:.78';
+    dialog.appendChild(translationHint);
+
+    function storeSelectedTranslation() {
+      translationValues[languageSelect.value] = translationInput.value.slice(0, 500);
+    }
+
+    languageSelect.addEventListener('change', function () {
+      var previousLanguage = languageSelect.getAttribute('data-previous-language') || activeLanguage;
+      translationValues[previousLanguage] = translationInput.value.slice(0, 500);
+      translationInput.value = translationValues[languageSelect.value] || '';
+      languageSelect.setAttribute('data-previous-language', languageSelect.value);
+      translationInput.setAttribute('aria-label', 'Display text for ' + languageSelect.value);
+    });
+    languageSelect.setAttribute('data-previous-language', languageSelect.value);
+    languageSelect.addEventListener('keydown', function (event) { event.stopPropagation(); });
+
+    var addLanguage = document.createElement('button');
+    addLanguage.type = 'button';
+    addLanguage.textContent = '+ Add language';
+    addLanguage.style.cssText = 'margin-top:10px;padding:0;border:0;background:transparent;color:inherit;font:600 12px ui-sans-serif,system-ui,sans-serif;text-decoration:underline;cursor:pointer';
+    addLanguage.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      var language = window.prompt('Language code (for example: en or zh-hant)');
+      if (!language) return;
+      language = language.trim().toLowerCase();
+      if (!/^[a-z][a-z0-9-]{0,31}$/i.test(language)) return;
+      storeSelectedTranslation();
+      var exists = false;
+      for (var optionIndex = 0; optionIndex < languageSelect.options.length; optionIndex++) {
+        if (languageSelect.options[optionIndex].value === language) exists = true;
+      }
+      if (!exists) selectOption(languageSelect, language);
+      languageSelect.value = language;
+      languageSelect.setAttribute('data-previous-language', language);
+      translationInput.value = translationValues[language] || '';
+      translationInput.setAttribute('aria-label', 'Display text for ' + language);
+      translationInput.focus();
+    });
+    dialog.appendChild(addLanguage);
+
+    var actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'padding:7px 10px;border:1px solid;border-radius:6px;background:transparent;color:inherit;font:600 12px ui-sans-serif,system-ui,sans-serif;cursor:pointer';
+    cancel.addEventListener('click', function () { stopEditing(false); canvas.focus(); });
+    actions.appendChild(cancel);
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.setAttribute('data-mm-editor-save', '1');
+    save.style.cssText = 'padding:7px 10px;border:1px solid transparent;border-radius:6px;font:600 12px ui-sans-serif,system-ui,sans-serif;cursor:pointer';
+    save.addEventListener('click', function () { stopEditing(true); canvas.focus(); });
+    actions.appendChild(save);
+    dialog.appendChild(actions);
+
+    dialog.addEventListener('keydown', function (event) {
       event.stopPropagation();
       var key = keyName(event);
       if (key === 'Enter') { event.preventDefault(); stopEditing(true); canvas.focus(); }
       if (key === 'Escape') { event.preventDefault(); stopEditing(false); canvas.focus(); }
     });
-    input.addEventListener('blur', function () { stopEditing(true); });
-
-    canvas.appendChild(input);
-    editor = { input: input, id: id };
-    input.focus();
-    if (selectAll) input.select();
+    dialog.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
+    canvas.appendChild(dialog);
+    editor = {
+      element: dialog,
+      id: id,
+      textInput: textInput,
+      languageSelect: languageSelect,
+      translationInput: translationInput,
+      translationValues: translationValues,
+    };
+    applyEditorColors(dialog);
+    textInput.focus();
+    if (selectAll) textInput.select();
   }
 
   function stopEditing(save) {
     if (!editor) return;
     var current = editor;
-    editor = null;
     if (save) {
       var node = nodeById(current.id);
-      var value = current.input.value.replace(/\s+/g, ' ').trim();
-      if (node && value && value !== node.text) {
+      var value = current.textInput.value.replace(/\s+/g, ' ').trim();
+      if (!value) {
+        current.textInput.focus();
+        return;
+      }
+      if (node) {
+        var before = JSON.stringify(node);
         node.text = value.slice(0, 500);
-        syncSource();
-        markDirty();
+        current.translationValues[current.languageSelect.value] = current.translationInput.value.slice(0, 500);
+        var displayText = {};
+        for (var language in current.translationValues) {
+          if (/^[a-z][a-z0-9-]{0,31}$/i.test(language)) {
+            displayText[language] = current.translationValues[language].slice(0, 500);
+          }
+        }
+        if (Object.keys(displayText).length) node.displayText = displayText;
+        else delete node.displayText;
+        if (before !== JSON.stringify(node)) {
+          syncSource();
+          markDirty();
+        }
       }
     }
-    if (current.input.parentNode) current.input.parentNode.removeChild(current.input);
+    editor = null;
+    if (current.element.parentNode) current.element.parentNode.removeChild(current.element);
     render();
   }
 
   // ── Pointer interactions: select, pan, drag-to-reparent ─────────────────
   var pointer = null; // {mode: 'pan'|'node', id, startX, startY, moved, dropId}
   var DRAG_THRESHOLD = 6;
+  var DOUBLE_CLICK_MS = 450;
+  var lastNodeClick = null; // {id, at}; survives the node re-render after click one
 
   function worldPoint(event) {
     var bounds = svg.getBoundingClientRect();
@@ -511,6 +837,7 @@
     var dy = event.clientY - pointer.startY;
     if (!pointer.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
     pointer.moved = true;
+    lastNodeClick = null;
 
     if (pointer.mode === 'pan') {
       view.tx = pointer.viewTx + dx;
@@ -548,10 +875,20 @@
 
     if (!current.moved) {
       if (current.id) {
+        var now = Date.now();
+        var doubleClick = !readOnly && lastNodeClick
+          && lastNodeClick.id === current.id
+          && now - lastNodeClick.at <= DOUBLE_CLICK_MS;
+        lastNodeClick = doubleClick ? null : { id: current.id, at: now };
         selectedId = current.id;
         render();
+        // A normal SVG dblclick is unreliable here because render() replaces
+        // the clicked node after the first click. Detect the two pointer-up
+        // events by node id so selected and unselected nodes behave alike.
+        if (doubleClick) startEditing(current.id, true);
       } else {
         // Background click: keep the selection but drop focus ring updates.
+        lastNodeClick = null;
       }
       canvas.focus();
       return;
@@ -566,15 +903,17 @@
     setDragOpacity(pointer.id, false);
     setDropHighlight(pointer.dropId, false);
     pointer = null;
+    lastNodeClick = null;
     svg.style.cursor = 'grab';
   });
 
   svg.addEventListener('dblclick', function (event) {
     var nodeId = nodeIdFromEvent(event);
     if (nodeId && !readOnly) {
+      lastNodeClick = null;
       selectedId = nodeId;
       render();
-      startEditing(nodeId, true);
+      if (!editor || editor.id !== nodeId) startEditing(nodeId, true);
     }
   });
 
@@ -647,10 +986,6 @@
     if (button) button.addEventListener('click', handler);
   }
 
-  onClick('[data-mm-add-child]', function () { if (selectedId) addChild(selectedId); });
-  onClick('[data-mm-add-sibling]', function () { if (selectedId) addSibling(selectedId); });
-  onClick('[data-mm-rename]', function () { if (selectedId) startEditing(selectedId, true); });
-  onClick('[data-mm-delete]', function () { if (selectedId) deleteNode(selectedId); });
   onClick('[data-mm-zoom-in]', function () {
     var bounds = svg.getBoundingClientRect();
     zoomAt(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2, 1.2);
@@ -704,7 +1039,7 @@
   // ── Dirty tracking + unsaved-changes guard ───────────────────────────────
   if (form && !readOnly) {
     form.addEventListener('input', function (event) {
-      if (event.target && event.target.name === 'name') markDirty();
+      if (event.target && (event.target.name === 'name' || event.target.name === 'slug')) markDirty();
     });
     form.addEventListener('submit', function () { dirty = false; });
     window.addEventListener('beforeunload', function (event) {
@@ -720,6 +1055,7 @@
   if (typeof MutationObserver !== 'undefined') {
     new MutationObserver(function () {
       COLORS = colorsForTheme();
+      if (editor) applyEditorColors(editor.element);
       render();
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   }
