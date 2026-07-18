@@ -1,0 +1,23 @@
+{
+  "id": "mindmap",
+  "name": "Mind Maps",
+  "version": "0.1.0",
+  "nav": [
+    { "label": "Mind Maps", "href": "maps", "roles": ["admin", "editor", "moderator"] }
+  ],
+  "permissions": [
+    { "value": "mindmap:view", "label": "Mind maps: view mind maps" },
+    { "value": "mindmap:write", "label": "Mind maps: create, edit and delete mind maps" }
+  ],
+  "assets": [
+    { "path": "/assets/mindmap-editor.js", "label": "Interactive mind map editor" }
+  ],
+  "contentTypes": {
+    "blueprint": {
+      "mindmap": [
+        "description:textarea",
+        { "node": ["@id", "@parent", "@text", "display_text"] }
+      ]
+    }
+  }
+}

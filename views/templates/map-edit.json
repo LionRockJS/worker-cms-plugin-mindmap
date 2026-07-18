@@ -1,0 +1,4 @@
+{
+  "sections": { "main": { "type": "map-edit" } },
+  "order": ["main"]
+}
