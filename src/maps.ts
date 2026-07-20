@@ -341,6 +341,7 @@ interface EditorViewOptions {
     timezone: string | null;
     editors: string | null;
     language: string;
+    languages: string[];
     fields: Array<{ name: string; value: string }>;
   };
 }
@@ -377,6 +378,7 @@ function editorView(
     timezone: cmsPage?.timezone ?? '',
     editors: cmsPage?.editors ?? '',
     language: cmsPage?.language ?? 'mis',
+    languages: cmsPage?.languages ?? [cmsPage?.language ?? 'mis'],
     cmsFields: cmsPage?.fields ?? [],
     fallbackAction: cmsPage ? `${ADMIN_BASE}/maps/${page.id}` : '',
     readOnly: !access.canEdit,
@@ -408,11 +410,26 @@ interface EditViewContext {
 }
 
 /** Renders the visual editor at the CMS's standard /admin/pages/:id/edit URL. */
-export async function handleMindmapEditView(request: Request, views: Fetcher): Promise<Response> {
+export async function handleMindmapEditView(
+  request: Request,
+  views: Fetcher,
+  loadLanguages?: () => Promise<string[]>,
+): Promise<Response> {
   const context = await request.json().catch(() => null) as EditViewContext | null;
   if (!context || context.mode !== 'edit' || context.pageType !== PAGE_TYPE) {
     return new Response('not found', { status: 404 });
   }
+
+  const requestedLanguage = context.language || 'mis';
+  let languages = [requestedLanguage];
+  if (loadLanguages) {
+    try {
+      languages = await loadLanguages();
+    } catch (error) {
+      console.error('Could not load CMS content languages:', error);
+    }
+  }
+  const language = languages.includes(requestedLanguage) ? requestedLanguage : languages[0];
 
   const lect = parseLect(context.page.lect);
   const storedNodes = nodesFromLect(lect);
@@ -437,7 +454,8 @@ export async function handleMindmapEditView(request: Request, views: Fetcher): P
         end: context.page.end,
         timezone: context.page.timezone,
         editors: context.page.editors,
-        language: context.language || 'mis',
+        language,
+        languages,
         fields,
       },
     },

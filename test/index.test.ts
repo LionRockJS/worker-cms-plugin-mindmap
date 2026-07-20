@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import { defaultNodes, nodeItemsFromNodes, nodesFromLect, parseMapData } from '../src/maps';
 import { renderView } from '../src/templates/liquid';
@@ -52,6 +52,7 @@ async function renderedText(response: Response): Promise<string> {
 interface RecordedCall {
   method: string;
   path: string;
+  headers: Headers;
   body: unknown;
 }
 
@@ -60,7 +61,12 @@ function mockCms(handler: (method: string, url: URL, body: unknown) => unknown |
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ method: init?.method ?? 'GET', path: url.pathname + url.search, body });
+    calls.push({
+      method: init?.method ?? 'GET',
+      path: url.pathname + url.search,
+      headers: new Headers(init?.headers),
+      body,
+    });
     const result = handler(init?.method ?? 'GET', url, body);
     if (result instanceof Response) return result;
     return Response.json(result);
@@ -126,7 +132,10 @@ describe('view + asset serving', () => {
     expect(script).toContain("translationHeading.textContent = 'Display text'");
     expect(script).toContain("languageLabel.textContent = 'Language'");
     expect(script).toContain("languageSelect.setAttribute('aria-label', 'Display text language')");
-    expect(script).toContain('+ Add language');
+    expect(script).toContain("host.getAttribute('data-mm-languages')");
+    expect(script).toContain('var languages = supportedLanguages');
+    expect(script).not.toContain('+ Add language');
+    expect(script).not.toContain('window.prompt');
     expect(script).toContain('entry.displayText');
     expect(script).toContain("form.querySelector('[data-mm-cms-fields]')");
     expect(script).toContain("prefix + '.display_text|' + languageCode");
@@ -252,6 +261,18 @@ describe('create', () => {
 });
 
 describe('editor view override', () => {
+  let metadataCalls: RecordedCall[];
+
+  beforeEach(() => {
+    metadataCalls = mockCms((method, url) => {
+      if (method === 'GET' && url.pathname === '/__cms/content-meta') {
+        expect(url.searchParams.get('types')).toBe('mindmap');
+        return { languages: ['mis', 'en', 'zh-hant', 'zh-hans'], default_language: 'mis' };
+      }
+      throw new Error(`unexpected ${method} ${url.pathname}`);
+    });
+  });
+
   function editViewRequest(
     overrides: Record<string, unknown> = {},
     user?: Record<string, unknown>,
@@ -296,6 +317,7 @@ describe('editor view override', () => {
     const data = await response.clone().json() as {
       data: string;
       action: string;
+      languages: string[];
       cmsFields: Array<{ name: string; value: string }>;
     };
     expect(JSON.parse(data.data)).toEqual({
@@ -306,6 +328,11 @@ describe('editor view override', () => {
       ],
     });
     expect(data.action).toBe('/admin/pages/42');
+    expect(data.languages).toEqual(['mis', 'en', 'zh-hant', 'zh-hans']);
+    expect(metadataCalls.map((call) => call.path)).toContain('/__cms/content-meta?types=mindmap');
+    const metadataCall = metadataCalls.find((call) => call.path.startsWith('/__cms/content-meta'))!;
+    expect(metadataCall.headers.get('x-plugin-id')).toBe('mindmap');
+    expect(metadataCall.headers.get('x-plugin-secret')).toBe(SECRET);
     expect(Object.fromEntries(data.cmsFields.map((field) => [field.name, field.value]))).toMatchObject({
       '.node[0]@id': 'root',
       '.node[0]@parent': '',
@@ -317,6 +344,7 @@ describe('editor view override', () => {
     const html = await renderedText(response);
     expect(html).toContain('data-mindmap');
     expect(html).toContain('data-mm-language="mis"');
+    expect(html).toContain('data-mm-languages="mis,en,zh-hant,zh-hans"');
     expect(html).not.toContain('data-mm-add-child');
     expect(html).not.toContain('data-mm-add-sibling');
     expect(html).not.toContain('data-mm-rename');

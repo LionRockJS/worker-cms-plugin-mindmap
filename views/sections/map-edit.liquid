@@ -30,7 +30,7 @@
       {% endunless %}
     </div>
 
-    <div data-mindmap data-mm-language="{{ language }}"{% if readOnly %} data-readonly="1"{% endif %} class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-4">
+    <div data-mindmap data-mm-language="{{ language }}" data-mm-languages="{{ languages | join: ',' }}"{% if readOnly %} data-readonly="1"{% endif %} class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-4">
       <div data-mm-toolbar hidden class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-gray-200">
         <span class="flex-1"></span>
         <button type="button" data-mm-zoom-out title="Zoom out" aria-label="Zoom out" class="inline-block px-4 py-2 rounded-lg text-sm font-semibold border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 cursor-pointer">&minus;</button>

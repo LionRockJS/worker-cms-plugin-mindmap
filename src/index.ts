@@ -21,7 +21,8 @@ import {
   serveViewAsset,
   tenantClientEnv,
 } from '@lionrockjs/worker-cms-plugin';
-import { handleMapsAdmin, handleMindmapEditView } from './maps';
+import { cmsContentLanguages } from './cms';
+import { handleMapsAdmin, handleMindmapEditView, PAGE_TYPE, PLUGIN_ID } from './maps';
 import { forbidden, mindmapAccessForRequest } from './permissions';
 // The plugin manifest (content type, nav, permissions, assets, editViews) is
 // plain data, served verbatim at /__plugin/manifest.
@@ -79,7 +80,11 @@ export default {
     if (path === '/__plugin/edit' && request.method === 'POST') {
       const access = mindmapAccessForRequest(request);
       if (!access.canEdit) return forbidden();
-      return handleMindmapEditView(request, env.VIEWS);
+      return handleMindmapEditView(
+        request,
+        env.VIEWS,
+        () => cmsContentLanguages(env, PLUGIN_ID, PAGE_TYPE),
+      );
     }
 
     if (path.startsWith('/__plugin/admin')) {

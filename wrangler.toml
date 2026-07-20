@@ -1,6 +1,6 @@
 name = "worker-cms-plugin-mindmap"
 main = "src/index.ts"
-compatibility_date = "2026-03-24"
+compatibility_date = "2026-07-14"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # Admin view templates (LiquidJS + JSON templates, mirroring the CMS) and the
@@ -26,9 +26,10 @@ binding = "CF_VERSION_METADATA"
 #   wrangler kv namespace create cms-plugin-mindmap-tenants
 #   wrangler kv key put --binding TENANTS "tenant:https://cms1.example.com" \
 #     '{"secret":"<32-byte hex, unique per CMS>"}'
-[[kv_namespaces]]
-binding = "TENANTS"
-id = "b8837f1af06643478eede46673992cf2"
+# [[kv_namespaces]]
+# binding = "TENANTS"
+# id = "REPLACE_WITH_ID_FROM_npm_run_kv_setup"
+# preview_id = "REPLACE_WITH_ID_FROM_npm_run_kv_setup_preview"
 
 [vars]
 # Base URL of the CMS Worker — where this plugin reaches the Plugin API

@@ -27,6 +27,16 @@
 
   var readOnly = host.getAttribute('data-readonly') === '1';
   var activeLanguage = host.getAttribute('data-mm-language') || 'mis';
+  var supportedLanguages = [];
+  var languageValues = (host.getAttribute('data-mm-languages') || activeLanguage).split(',');
+  for (var languageIndex = 0; languageIndex < languageValues.length; languageIndex++) {
+    var supportedLanguage = languageValues[languageIndex].trim().toLowerCase();
+    if (/^[a-z][a-z0-9-]{0,31}$/i.test(supportedLanguage)
+      && supportedLanguages.indexOf(supportedLanguage) < 0) {
+      supportedLanguages.push(supportedLanguage);
+    }
+  }
+  if (!supportedLanguages.length) supportedLanguages.push(activeLanguage);
   var form = source.form || host.closest('form');
   var cmsFields = form && form.querySelector('[data-mm-cms-fields]');
   var dirtyBadge = document.querySelector('[data-mm-dirty]');
@@ -593,16 +603,6 @@
     return input;
   }
 
-  function knownDisplayLanguages() {
-    var languages = {};
-    languages[activeLanguage] = true;
-    for (var i = 0; i < nodes.length; i++) {
-      var displayText = nodes[i].displayText || {};
-      for (var language in displayText) languages[language] = true;
-    }
-    return Object.keys(languages).sort();
-  }
-
   function selectOption(select, language) {
     var option = document.createElement('option');
     option.value = language;
@@ -650,7 +650,7 @@
     languageSelect.setAttribute('aria-label', 'Display text language');
     languageSelect.setAttribute('data-mm-editor-input', '1');
     languageSelect.style.cssText = 'min-width:5.25rem;padding:4px 8px;border:1px solid;border-radius:8px;font:12px ui-sans-serif,system-ui,sans-serif';
-    var languages = knownDisplayLanguages();
+    var languages = supportedLanguages;
     for (var i = 0; i < languages.length; i++) {
       selectOption(languageSelect, languages[i]);
     }
@@ -670,10 +670,6 @@
     translationHint.style.cssText = 'margin:4px 0 0;font:12px ui-sans-serif,system-ui,sans-serif;opacity:.78';
     dialog.appendChild(translationHint);
 
-    function storeSelectedTranslation() {
-      translationValues[languageSelect.value] = translationInput.value.slice(0, 500);
-    }
-
     languageSelect.addEventListener('change', function () {
       var previousLanguage = languageSelect.getAttribute('data-previous-language') || activeLanguage;
       translationValues[previousLanguage] = translationInput.value.slice(0, 500);
@@ -683,31 +679,6 @@
     });
     languageSelect.setAttribute('data-previous-language', languageSelect.value);
     languageSelect.addEventListener('keydown', function (event) { event.stopPropagation(); });
-
-    var addLanguage = document.createElement('button');
-    addLanguage.type = 'button';
-    addLanguage.textContent = '+ Add language';
-    addLanguage.style.cssText = 'margin-top:10px;padding:0;border:0;background:transparent;color:inherit;font:600 12px ui-sans-serif,system-ui,sans-serif;text-decoration:underline;cursor:pointer';
-    addLanguage.addEventListener('click', function (event) {
-      event.preventDefault();
-      event.stopPropagation();
-      var language = window.prompt('Language code (for example: en or zh-hant)');
-      if (!language) return;
-      language = language.trim().toLowerCase();
-      if (!/^[a-z][a-z0-9-]{0,31}$/i.test(language)) return;
-      storeSelectedTranslation();
-      var exists = false;
-      for (var optionIndex = 0; optionIndex < languageSelect.options.length; optionIndex++) {
-        if (languageSelect.options[optionIndex].value === language) exists = true;
-      }
-      if (!exists) selectOption(languageSelect, language);
-      languageSelect.value = language;
-      languageSelect.setAttribute('data-previous-language', language);
-      translationInput.value = translationValues[language] || '';
-      translationInput.setAttribute('aria-label', 'Display text for ' + language);
-      translationInput.focus();
-    });
-    dialog.appendChild(addLanguage);
 
     var actions = document.createElement('div');
     actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px';
