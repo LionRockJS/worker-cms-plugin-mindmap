@@ -26,9 +26,9 @@ binding = "CF_VERSION_METADATA"
 #   wrangler kv namespace create cms-plugin-mindmap-tenants
 #   wrangler kv key put --binding TENANTS "tenant:https://cms1.example.com" \
 #     '{"secret":"<32-byte hex, unique per CMS>"}'
-# [[kv_namespaces]]
-# binding = "TENANTS"
-# id = "REPLACE_WITH_ID_FROM_npm_run_kv_setup"
+[[kv_namespaces]]
+binding = "TENANTS"
+id = "7878cc6a14ea4761b134417e8696e9eb"
 # preview_id = "REPLACE_WITH_ID_FROM_npm_run_kv_setup_preview"
 
 [vars]
